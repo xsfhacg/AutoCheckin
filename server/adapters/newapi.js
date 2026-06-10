@@ -113,6 +113,10 @@ function cookieHeader(jar) {
     .join('; ');
 }
 
+function hasSessionCookie(jar) {
+  return Boolean(jar.session);
+}
+
 function isAuthExpired(status, payloadText) {
   return (
     status === 401 ||
@@ -334,16 +338,18 @@ export async function runNewApiCheckin(site, runtime = {}, adapterConfig = {}) {
     jar.__newApiUser = String(site.newApiUser).trim();
   }
   const routes = getRoutes(adapterConfig);
+  const shouldTrySessionFirst = hasSessionCookie(jar);
 
   try {
-    log(Object.keys(jar).length ? '读取已有 Cookie 会话' : '没有 Cookie 会话，首次运行需要登录');
-    if (Object.keys(jar).length === 0) {
+    log(shouldTrySessionFirst ? '读取已有 Session，会优先使用 Session 签到' : '没有 Session，会使用账号密码登录');
+    if (!shouldTrySessionFirst) {
       await login(site, runtime, jar, log, routes);
     }
 
     let result = await checkin(site, runtime, jar, log, routes);
 
     if (!result || isAuthExpired(result.response.status, result.text)) {
+      log(shouldTrySessionFirst ? 'Session 登录失败或已失效，改用账号密码登录' : '登录状态不可用，重新调用账号密码登录');
       await login(site, runtime, jar, log, routes);
       result = await checkin(site, runtime, jar, log, routes);
     }
