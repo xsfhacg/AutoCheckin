@@ -1,0 +1,16 @@
+services:
+  auto-checkin:
+    build:
+      context: .
+      args:
+        NODE_VERSION: 22.22.2
+    image: auto-checkin:latest
+    container_name: auto-checkin
+    restart: unless-stopped
+    environment:
+      PORT: 8787
+      TZ: Asia/Shanghai
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/app/data

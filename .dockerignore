@@ -1,0 +1,10 @@
+node_modules
+dist
+data
+*.log
+.git
+.gitignore
+AutoCheckin.zip
+Dockerfile
+docker-compose.yml
+start-dev.bat
