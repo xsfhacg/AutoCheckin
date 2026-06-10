@@ -291,7 +291,7 @@ h2 {
 
 .field textarea {
   width: 100%;
-  min-height: 150px;
+  min-height: 50px;
   padding: 12px;
   color: #18211d;
   background: #f8faf6;
@@ -414,7 +414,10 @@ h2 {
 .history-list {
   display: grid;
   gap: 10px;
+  max-height: 380px;
   margin-top: 16px;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .history-item {

@@ -470,7 +470,7 @@ onMounted(loadAll);
           </div>
 
           <div class="history-list">
-            <article v-for="item in history.slice(0, 8)" :key="`${item.siteId}-${item.startedAt}`" class="history-item">
+            <article v-for="item in history" :key="`${item.siteId}-${item.startedAt}`" class="history-item">
               <CheckCircle2 :class="{ failed: !item.ok }" :size="20" />
               <div>
                 <strong>{{ item.siteName }}</strong>

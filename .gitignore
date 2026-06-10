@@ -1,8 +1,6 @@
+.history/
 node_modules/
 dist/
-data/config.json
-data/history.json
-data/sessions/
+data/
 *.log
 .env
-.history/
