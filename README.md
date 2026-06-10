@@ -1,7 +1,3 @@
-<<<<<<< HEAD
-# AutoCheckin
-网页自动签到，当前已适配NewAPI
-=======
 # Auto Checkin
 
 一个可持续运行在服务器上的网页自动签到项目。当前内置 `NewAPI` 轻量 HTTP 适配器，支持配置多个站点、保存 Cookie 登录状态、按固定时间或间隔频率执行签到。
@@ -192,4 +188,3 @@ docker compose up -d
 3. 在 `data/config.json` 的 `adapters` 中增加分类。
 
 适配器只需要实现类似 `runNewApiCheckin(site, runtime)` 的函数并返回运行结果。
->>>>>>> ed95389 (first commit)

@@ -5,3 +5,4 @@ data/history.json
 data/sessions/
 *.log
 .env
+.history/
