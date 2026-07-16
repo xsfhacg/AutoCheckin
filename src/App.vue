@@ -5,10 +5,12 @@ import {
   CalendarClock,
   CheckCircle2,
   CirclePlus,
+  Download,
   Play,
   Save,
   ShieldCheck,
-  Trash2
+  Trash2,
+  Upload
 } from '@lucide/vue';
 
 const loading = ref(true);
@@ -156,6 +158,8 @@ async function loadAll() {
 async function save() {
   saving.value = true;
   try {
+    // 保存前将签到路径文本缓冲解析回数组
+    config.value.adapters.forEach(syncCheckinPaths);
     normalizeConfig(
       await requestJson('/api/config', {
         method: 'PUT',
@@ -236,23 +240,179 @@ function ensureAdapterRoutes(adapter) {
     '/api/user/signin',
     '/api/user/sign_in'
   ];
+  // 文本缓冲：供 textarea v-model 使用，避免实时解析导致无法回车换行
+  if (adapter.routes.checkinApiPathsText === undefined) {
+    adapter.routes.checkinApiPathsText = adapter.routes.checkinApiPaths.join('\n');
+  }
   return adapter.routes;
 }
 
-function getCheckinPathsText(adapter) {
-  return ensureAdapterRoutes(adapter).checkinApiPaths.join('\n');
-}
-
-function setCheckinPathsText(adapter, value) {
-  ensureAdapterRoutes(adapter).checkinApiPaths = value
-    .split(/\r?\n|,/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+// 保存配置前，将文本缓冲解析回数组
+function syncCheckinPaths(adapter) {
+  const text = adapter.routes?.checkinApiPathsText;
+  if (text !== undefined) {
+    adapter.routes.checkinApiPaths = text
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
 }
 
 function removeSite(siteId) {
   config.value.sites = config.value.sites.filter((site) => site.id !== siteId);
   activeSiteId.value = config.value.sites[0]?.id || '';
+}
+
+// AES-GCM 加密相关
+const ENCRYPT_KEY = 'xsfhacg-token-2026';
+
+async function deriveKey() {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(ENCRYPT_KEY),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveKey']
+  );
+  return crypto.subtle.deriveKey(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode('auto-checkin-salt'),
+      iterations: 100000,
+      hash: 'SHA-256'
+    },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+// 加密密码：返回 "enc:" 前缀 + Base64(iv + 密文)
+async function encryptPassword(plain) {
+  if (!plain) {
+    return '';
+  }
+  const key = await deriveKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    enc.encode(plain)
+  );
+  const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+  combined.set(iv, 0);
+  combined.set(new Uint8Array(ciphertext), iv.length);
+  return 'enc:' + btoa(String.fromCharCode(...combined));
+}
+
+// 解密密码：兼容 "enc:" 前缀的 AES 加密、旧 Base64 编码、明文
+async function decryptPassword(value) {
+  if (!value) {
+    return '';
+  }
+  // AES-GCM 加密格式
+  if (value.startsWith('enc:')) {
+    try {
+      const key = await deriveKey();
+      const combined = Uint8Array.from(atob(value.slice(4)), (c) => c.charCodeAt(0));
+      const iv = combined.slice(0, 12);
+      const ciphertext = combined.slice(12);
+      const decrypted = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        ciphertext
+      );
+      return new TextDecoder().decode(decrypted);
+    } catch {
+      return value;
+    }
+  }
+  // 兼容旧的 Base64 编码
+  try {
+    const decoded = decodeURIComponent(escape(atob(value)));
+    return decoded === value ? value : decoded;
+  } catch {
+    // 解码失败说明是明文，直接返回
+    return value;
+  }
+}
+
+// 导出站点列表为 JSON 文件（密码用 AES-GCM 加密）
+async function exportSites() {
+  const sites = await Promise.all(
+    config.value.sites.map(async (site) => ({
+      ...site,
+      password: await encryptPassword(site.password)
+    }))
+  );
+  const data = {
+    type: 'auto-checkin-sites',
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    sites
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `auto-checkin-sites-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showNotice('success', `已导出 ${sites.length} 个站点（密码已加密）`);
+}
+
+// 导入站点列表
+function importSites() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) {
+      return;
+    }
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const sites = Array.isArray(data) ? data : data.sites;
+      if (!Array.isArray(sites)) {
+        throw new Error('文件格式不正确：缺少 sites 数组');
+      }
+      const validSites = sites.filter((s) => s && s.id && s.adapter);
+      if (validSites.length === 0) {
+        throw new Error('文件中没有有效的站点数据');
+      }
+      // 解密密码（兼容 AES 加密、旧 Base64 编码、明文）
+      const decodedSites = await Promise.all(
+        validSites.map(async (site) => ({
+          ...site,
+          password: await decryptPassword(site.password)
+        }))
+      );
+      // 合并：同 id 覆盖，新 id 追加
+      const existingIds = new Set(config.value.sites.map((s) => s.id));
+      let added = 0;
+      let updated = 0;
+      for (const site of decodedSites) {
+        if (existingIds.has(site.id)) {
+          const idx = config.value.sites.findIndex((s) => s.id === site.id);
+          config.value.sites[idx] = { ...site };
+          updated++;
+        } else {
+          config.value.sites.push({ ...site });
+          existingIds.add(site.id);
+          added++;
+        }
+      }
+      showNotice('success', `导入完成：新增 ${added} 个，更新 ${updated} 个，请点击保存配置生效`);
+    } catch (error) {
+      showNotice('error', error.message || '导入失败');
+    }
+  };
+  input.click();
 }
 
 function formatDate(value) {
@@ -355,10 +515,22 @@ onMounted(loadAll);
           <p class="eyebrow">持续运行 / Cookie 会话 / 轻量 HTTP 适配器</p>
           <h1>{{ activeView === 'sites' ? '签到配置' : '分类配置' }}</h1>
         </div>
-        <button class="primary" :disabled="saving || loading" @click="save">
-          <Save :size="18" />
-          <span>{{ saving ? '保存中' : '保存配置' }}</span>
-        </button>
+        <div class="actions">
+          <template v-if="activeView === 'sites'">
+            <button class="ghost" :disabled="loading" @click="importSites" title="从 JSON 文件导入站点">
+              <Upload :size="18" />
+              <span>导入</span>
+            </button>
+            <button class="ghost" :disabled="loading || config.sites.length === 0" @click="exportSites" title="导出站点列表为 JSON 文件">
+              <Download :size="18" />
+              <span>导出</span>
+            </button>
+          </template>
+          <button class="primary" :disabled="saving || loading" @click="save">
+            <Save :size="18" />
+            <span>{{ saving ? '保存中' : '保存配置' }}</span>
+          </button>
+        </div>
       </header>
 
       <div v-if="loading" class="loading-panel">加载配置中...</div>
@@ -368,12 +540,9 @@ onMounted(loadAll);
           <div class="panel-heading">
             <div>
               <p class="eyebrow">Schedule</p>
-              <h2>签到时间</h2>
+              <h2>定时调度</h2>
+              <p class="hint">在下方各站点中单独控制是否参与定时签到</p>
             </div>
-            <label class="switch">
-              <input v-model="config.schedule.enabled" type="checkbox" />
-              <span></span>
-            </label>
           </div>
 
           <div class="schedule-grid">
@@ -409,6 +578,10 @@ onMounted(loadAll);
               <h2>{{ activeSite.name || '站点配置' }}</h2>
             </div>
             <div class="actions">
+              <label class="switch site-switch" title="是否参与定时签到">
+                <input v-model="activeSite.enabled" type="checkbox" />
+                <span></span>
+              </label>
               <button class="ghost danger" @click="removeSite(activeSite.id)">
                 <Trash2 :size="16" />
                 <span>删除</span>
@@ -419,6 +592,8 @@ onMounted(loadAll);
               </button>
             </div>
           </div>
+
+          <p class="hint">当前站点定时签到：{{ activeSite.enabled === false ? '已关闭' : '已开启' }}（不影响手动"立即签到"）</p>
 
           <div class="form-grid">
             <label class="field">
@@ -522,10 +697,9 @@ onMounted(loadAll);
             <label class="field wide">
               <span>签到接口候选路径</span>
               <textarea
-                :value="getCheckinPathsText(activeAdapter)"
+                v-model="ensureAdapterRoutes(activeAdapter).checkinApiPathsText"
                 rows="7"
                 placeholder="/api/user/checkin"
-                @input="setCheckinPathsText(activeAdapter, $event.target.value)"
               ></textarea>
             </label>
           </div>

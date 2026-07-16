@@ -467,6 +467,19 @@ h2 {
   color: #657062;
 }
 
+.hint {
+  margin: 6px 0 0;
+  color: #6f7b6a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.site-switch {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+}
+
 .adapter-editor-list {
   display: grid;
   gap: 16px;

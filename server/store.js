@@ -179,7 +179,7 @@ export async function getHistory() {
 export async function appendHistory(entry) {
   const history = await getHistory();
   history.unshift(entry);
-  await writeJson(historyPath, history.slice(0, 200));
+  await writeJson(historyPath, history.slice(0, 300));
   return history;
 }
 

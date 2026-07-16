@@ -90,8 +90,12 @@ function applyManualSession(jar, value) {
     return;
   }
 
+  // 支持粘贴整段 Cookie 或单独的 session 值
   const sessionMatch = text.match(/(?:^|[;\s])session=([^;\s]+)/i);
-  const userMatch = text.match(/(?:^|\n)\s*new-api-user\s*[:=]\s*([^\s;]+)/i);
+  const userMatch = text.match(/(?:^|[;\s])new-api-user\s*[:=]\s*([^\s;]+)/i) || text.match(/(?:^|\n)\s*new-api-user\s*[:=]\s*([^\s;]+)/i);
+  const vidMatch = text.match(/(?:^|[;\s])newapi_vid=([^;\s]+)/i);
+  const deviceFpMatch = text.match(/x-device-fp\s*[:=]\s*([0-9a-fA-F]+)/i);
+  const deviceSigMatch = text.match(/x-device-sig\s*[:=]\s*([0-9a-fA-F]+)/i);
 
   if (sessionMatch) {
     jar.session = sessionMatch[1].trim();
@@ -103,6 +107,17 @@ function applyManualSession(jar, value) {
     jar.__newApiUser = userMatch[1].trim();
   } else if (jar.session && !jar.__newApiUser) {
     jar.__newApiUser = '1';
+  }
+
+  // 设备指纹相关字段：NewAPI 部分加强分支（如维云）需要
+  if (vidMatch) {
+    jar.newapi_vid = vidMatch[1].trim();
+  }
+  if (deviceFpMatch) {
+    jar.__deviceFp = deviceFpMatch[1].trim();
+  }
+  if (deviceSigMatch) {
+    jar.__deviceSig = deviceSigMatch[1].trim();
   }
 }
 
@@ -209,7 +224,64 @@ async function writeSession(sessionPath, cookies) {
   );
 }
 
-async function request(site, runtime, jar, url, options = {}) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// 判断是否为可重试的网络/超时错误
+function isRetryableNetworkError(error) {
+  if (!error) {
+    return false;
+  }
+  const name = error.name || '';
+  const message = error.message || '';
+  return (
+    name === 'AbortError' ||           // 超时
+    name === 'TypeError' ||             // fetch 网络层错误（DNS、连接拒绝等）
+    name === 'FetchError' ||
+    /fetch|network|timeout|econnreset|socket hang up|etimedout|enotfound|econnrefused/i.test(message)
+  );
+}
+
+// 判断是否为可重试的服务端错误状态码
+function isRetryableStatus(status) {
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+async function request(site, runtime, jar, url, options = {}, log) {
+  const maxRetries = Number(runtime.maxRetries) || 2;
+  const baseDelay = Number(runtime.retryDelayMs) || 2000;
+
+  let lastError = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await requestOnce(site, runtime, jar, url, options);
+
+      // 服务端 429/5xx：可重试，且还有重试次数
+      if (isRetryableStatus(result.response.status) && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        log?.(`服务端返回 ${result.response.status}，${delay / 1000}s 后重试（第 ${attempt + 1}/${maxRetries} 次）`);
+        await sleep(delay);
+        continue;
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+      if (isRetryableNetworkError(error) && attempt < maxRetries) {
+        const delay = baseDelay * Math.pow(2, attempt);
+        log?.(`请求失败：${error.message}，${delay / 1000}s 后重试（第 ${attempt + 1}/${maxRetries} 次）`);
+        await sleep(delay);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error('请求失败且重试次数已用完');
+}
+
+async function requestOnce(site, runtime, jar, url, options = {}) {
   const controller = new AbortController();
   const timeoutMs = Number(runtime.requestTimeoutSeconds || 0) * 1000 || runtime.requestTimeoutMs || 20000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -227,6 +299,18 @@ async function request(site, runtime, jar, url, options = {}) {
 
   if (jar.__newApiUser) {
     headers['New-Api-User'] = jar.__newApiUser;
+  }
+
+  // 设备指纹头：部分 NewAPI 加强分支（如维云）强制校验
+  const vid = jar.newapi_vid;
+  if (vid) {
+    headers['x-device-vid'] = vid;
+  }
+  if (jar.__deviceFp) {
+    headers['x-device-fp'] = jar.__deviceFp;
+  }
+  if (jar.__deviceSig) {
+    headers['x-device-sig'] = jar.__deviceSig;
   }
 
   try {
@@ -285,7 +369,7 @@ async function login(site, runtime, jar, log, routes) {
         method: 'POST',
         body,
         referer: resolveUrl(site, routes.loginPagePath)
-      });
+      }, log);
 
       if (isSuccessful(payload, response.status) && !isAuthExpired(response.status, text)) {
         jar.__newApiUser = extractUserId(payload) || jar.__newApiUser || '1';
@@ -304,6 +388,7 @@ async function login(site, runtime, jar, log, routes) {
 async function checkin(site, runtime, jar, log, routes) {
   const paths = normalizePathList(routes.checkinApiPaths, defaultRoutes.checkinApiPaths);
   let lastResult = null;
+  let authExpired = false;
 
   for (const path of paths) {
     const url = resolveUrl(site, path);
@@ -311,7 +396,7 @@ async function checkin(site, runtime, jar, log, routes) {
     const result = await request(site, runtime, jar, url, {
       method: 'POST',
       referer: resolveUrl(site, routes.checkinPagePath)
-    });
+    }, log);
     lastResult = { path, ...result };
 
     if (isEndpointMismatch(result.response.status, result.payload)) {
@@ -319,11 +404,17 @@ async function checkin(site, runtime, jar, log, routes) {
       continue;
     }
 
-    if (!isAuthExpired(result.response.status, result.text)) {
-      return lastResult;
+    if (isAuthExpired(result.response.status, result.text)) {
+      authExpired = true;
+      log(`签到接口认证失效：${path}，${getPayloadMessage(result.payload) || `HTTP ${result.response.status}`}`);
+      continue;
     }
+
+    return lastResult;
   }
 
+  // 记录最后的认证状态，供外层判断是否需要重登
+  lastResult.__authExpired = authExpired;
   return lastResult;
 }
 
@@ -348,8 +439,9 @@ export async function runNewApiCheckin(site, runtime = {}, adapterConfig = {}) {
 
     let result = await checkin(site, runtime, jar, log, routes);
 
-    if (!result || isAuthExpired(result.response.status, result.text)) {
-      log(shouldTrySessionFirst ? 'Session 登录失败或已失效，改用账号密码登录' : '登录状态不可用，重新调用账号密码登录');
+    if (!result || result.__authExpired || isAuthExpired(result.response.status, result.text)) {
+      delete result?.__authExpired;
+      log(shouldTrySessionFirst ? 'Session 失效或已过期，改用账号密码重新登录' : '登录状态不可用，重新调用账号密码登录');
       await login(site, runtime, jar, log, routes);
       result = await checkin(site, runtime, jar, log, routes);
     }
@@ -357,6 +449,8 @@ export async function runNewApiCheckin(site, runtime = {}, adapterConfig = {}) {
     if (!result) {
       throw new Error('没有可用的签到接口路径');
     }
+
+    delete result.__authExpired;
 
     await writeSession(sessionPath, jar);
     const message = getPayloadMessage(result.payload) || `HTTP ${result.response.status}`;

@@ -1,0 +1,6 @@
+小白code：
+https://token.dialoguedui.com/checkin/api/checkin
+
+
+斑马API：
+https://bmapi.020212.xyz/api/v1/checkin
