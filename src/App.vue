@@ -269,8 +269,12 @@ async function toggleSiteEnabled(site) {
   await save();
 }
 
-// AES-GCM 加密相关
+// 加密相关
 const ENCRYPT_KEY = 'xsfhacg-token-2026';
+
+// Web Crypto API（crypto.subtle）仅在安全上下文（HTTPS / localhost）下可用
+// HTTP 部署时降级为 XOR + Base64
+const hasSubtleCrypto = typeof crypto !== 'undefined' && crypto.subtle;
 
 async function deriveKey() {
   const enc = new TextEncoder();
@@ -295,32 +299,57 @@ async function deriveKey() {
   );
 }
 
-// 加密密码：返回 "enc:" 前缀 + Base64(iv + 密文)
+// XOR 加密（HTTP 降级方案）
+function xorCipher(text, key) {
+  const textBytes = new TextEncoder().encode(text);
+  const keyBytes = new TextEncoder().encode(key);
+  const result = new Uint8Array(textBytes.length);
+  for (let i = 0; i < textBytes.length; i++) {
+    result[i] = textBytes[i] ^ keyBytes[i % keyBytes.length];
+  }
+  return result;
+}
+
+// 加密密码
 async function encryptPassword(plain) {
   if (!plain) {
     return '';
   }
-  const key = await deriveKey();
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const enc = new TextEncoder();
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    enc.encode(plain)
-  );
-  const combined = new Uint8Array(iv.length + ciphertext.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ciphertext), iv.length);
-  return 'enc:' + btoa(String.fromCharCode(...combined));
+  // 安全上下文：使用 AES-256-GCM
+  if (hasSubtleCrypto) {
+    try {
+      const key = await deriveKey();
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const enc = new TextEncoder();
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: 'AES-GCM', iv },
+        key,
+        enc.encode(plain)
+      );
+      const combined = new Uint8Array(iv.length + ciphertext.byteLength);
+      combined.set(iv, 0);
+      combined.set(new Uint8Array(ciphertext), iv.length);
+      return 'enc:' + btoa(String.fromCharCode(...combined));
+    } catch {
+      // 降级到 XOR
+    }
+  }
+  // HTTP 降级：XOR + Base64
+  const cipherBytes = xorCipher(plain, ENCRYPT_KEY);
+  return 'xor:' + btoa(String.fromCharCode(...cipherBytes));
 }
 
-// 解密密码：兼容 "enc:" 前缀的 AES 加密、旧 Base64 编码、明文
+// 解密密码：兼容 AES-GCM、XOR、旧 Base64 编码、明文
 async function decryptPassword(value) {
   if (!value) {
     return '';
   }
   // AES-GCM 加密格式
   if (value.startsWith('enc:')) {
+    if (!hasSubtleCrypto) {
+      // HTTP 环境无法解密 AES，原样返回
+      return value;
+    }
     try {
       const key = await deriveKey();
       const combined = Uint8Array.from(atob(value.slice(4)), (c) => c.charCodeAt(0));
@@ -332,6 +361,20 @@ async function decryptPassword(value) {
         ciphertext
       );
       return new TextDecoder().decode(decrypted);
+    } catch {
+      return value;
+    }
+  }
+  // XOR 降级格式
+  if (value.startsWith('xor:')) {
+    try {
+      const cipherBytes = Uint8Array.from(atob(value.slice(4)), (c) => c.charCodeAt(0));
+      const keyBytes = new TextEncoder().encode(ENCRYPT_KEY);
+      const result = new Uint8Array(cipherBytes.length);
+      for (let i = 0; i < cipherBytes.length; i++) {
+        result[i] = cipherBytes[i] ^ keyBytes[i % keyBytes.length];
+      }
+      return new TextDecoder().decode(result);
     } catch {
       return value;
     }
