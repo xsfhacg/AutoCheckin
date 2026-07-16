@@ -263,6 +263,12 @@ function removeSite(siteId) {
   activeSiteId.value = config.value.sites[0]?.id || '';
 }
 
+// 切换站点定时开关并立即保存
+async function toggleSiteEnabled(site) {
+  site.enabled = site.enabled === false;
+  await save();
+}
+
 // AES-GCM 加密相关
 const ENCRYPT_KEY = 'xsfhacg-token-2026';
 
@@ -579,7 +585,11 @@ onMounted(loadAll);
             </div>
             <div class="actions">
               <label class="switch site-switch" title="是否参与定时签到">
-                <input v-model="activeSite.enabled" type="checkbox" />
+                <input
+                  :checked="activeSite.enabled !== false"
+                  type="checkbox"
+                  @change="toggleSiteEnabled(activeSite)"
+                />
                 <span></span>
               </label>
               <button class="ghost danger" @click="removeSite(activeSite.id)">
