@@ -32,6 +32,11 @@ button {
   min-height: 100vh;
 }
 
+.sidebar,
+.workspace {
+  min-width: 0;
+}
+
 .notice {
   position: fixed;
   z-index: 20;
@@ -191,9 +196,17 @@ p {
   font-weight: 800;
 }
 
+.adapter-name span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .site-tab {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
   width: 100%;
   min-height: 50px;
   padding: 12px;
@@ -204,6 +217,14 @@ p {
   border-radius: 8px;
 }
 
+.site-tab > span {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .site-tab.active {
   color: #152017;
   background: #d8ff9b;
@@ -211,15 +232,26 @@ p {
 }
 
 .site-tab small {
+  flex: 0 0 auto;
+  max-width: 45%;
   color: inherit;
+  overflow: hidden;
   opacity: 0.7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workspace {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-content: start;
   padding: 30px;
+}
+
+.workspace > * {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .topbar {
@@ -248,6 +280,8 @@ h2 {
 
 .panel,
 .loading-panel {
+  width: 100%;
+  min-width: 0;
   padding: 22px;
   background: #ffffff;
   border: 1px solid #dfe6d8;
@@ -267,6 +301,7 @@ h2 {
 .time-list {
   display: grid;
   gap: 8px;
+  min-width: 0;
 }
 
 .field span,
